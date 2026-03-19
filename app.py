@@ -9,6 +9,8 @@ import time
 import streamlit as st
 from pathlib import Path
 
+from auth import AuthStore, send_otp, logout, get_current_user
+
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -19,6 +21,9 @@ from config import (
     LLM_PROVIDER
 )
 from utils import load_json, format_inr
+
+# Flag to bypass OTP login (useful for local/demo runs)
+BYPASS_AUTH = os.getenv("BYPASS_AUTH", "true").lower() in ("1", "true", "yes", "y")
 
 def _render_extraction_visuals(data: dict, doc_type: str):
     """Render user-friendly visuals instead of raw JSON."""
@@ -301,12 +306,78 @@ def init_session():
         "qualitative_notes": [],
         "active_tab": 0,
         "swot_analysis": None,
+        # Authentication
+        "user": None,
+        "otp_step": 0,
+        "otp_sent_contact": None,
+        "otp_sent_type": None,
     }
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
 
 init_session()
+
+# Auto-set a demo user when auth is bypassed
+if BYPASS_AUTH and not st.session_state.get("user"):
+    st.session_state["user"] = {
+        "contact": "demo@local",
+        "contact_type": "bypass",
+        "created_at": time.time(),
+        "last_login_at": time.time(),
+    }
+
+
+def _render_login_flow():
+    """Render a simple OTP-based login flow."""
+    st.markdown("## 🔐 Sign in")
+    st.markdown(
+        "Use an email address or phone number to receive a one-time login code. "
+        "For demo use, OTP will be displayed if email/SMS is not configured."
+    )
+
+    with st.form("login_form"):
+        contact_method = st.radio("Login via", ["Email", "Phone"], index=0, horizontal=True)
+        contact_label = "Email Address" if contact_method == "Email" else "Phone Number"
+        contact = st.text_input(contact_label, value=st.session_state.get("otp_sent_contact") or "")
+        send = st.form_submit_button("Send OTP")
+
+        if send:
+            try:
+                sent, message = send_otp(contact, contact_method.lower())
+                st.session_state["otp_step"] = 1
+                st.session_state["otp_sent_contact"] = contact
+                st.session_state["otp_sent_type"] = contact_method.lower()
+                st.success(message)
+            except Exception as e:
+                st.error(str(e))
+
+    if st.session_state.get("otp_step") == 1 and st.session_state.get("otp_sent_contact"):
+        with st.form("verify_otp_form"):
+            otp_input = st.text_input("Enter the OTP", value="")
+            verify = st.form_submit_button("Verify OTP")
+            if verify:
+                contact = st.session_state.get("otp_sent_contact")
+                contact_type = st.session_state.get("otp_sent_type")
+                store = AuthStore()
+                if store.verify_otp(contact, contact_type, otp_input):
+                    user = store.upsert_user(contact, contact_type)
+                    st.session_state["user"] = {
+                        "contact": user.contact,
+                        "contact_type": user.contact_type,
+                        "created_at": user.created_at,
+                        "last_login_at": user.last_login_at,
+                    }
+                    st.success("✅ Logged in successfully.")
+                    # Streamlit 1.49+ uses st.rerun() instead of st.experimental_rerun()
+                    st.rerun()
+                else:
+                    st.error("Invalid or expired OTP. Please try again.")
+
+
+if not st.session_state.get("user") and not BYPASS_AUTH:
+    _render_login_flow()
+    st.stop()
 
 
 # ─── Header ───
@@ -321,6 +392,14 @@ st.markdown("""
 with st.sidebar:
     st.markdown(f"### ⚡ Mode: {get_mode_display()}")
     st.divider()
+
+    user = get_current_user()
+    if user and not BYPASS_AUTH:
+        st.markdown(f"### 👤 Logged in as {user.contact}")
+        if st.button("Sign out", use_container_width=True):
+            logout()
+            st.rerun()
+        st.divider()
 
     if IS_DEMO:
         st.info("🟡 **Demo Mode** — Using sample data for 'Bharat Steel Industries Pvt Ltd'. No API keys needed.")

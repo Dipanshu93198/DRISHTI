@@ -49,3 +49,8 @@ playwright>=1.40.0                # MCA21 / e-Courts scraping
 
 # ── Visualization ──────────────────────────
 plotly>=5.18.0
+
+# ── Authentication (OTP via SMS)
+# Optional; only required if you want SMS OTP support.
+twilio>=8.0.0
+gunicorn>=20.0.0
